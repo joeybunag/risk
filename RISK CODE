@@ -1,0 +1,238 @@
+---
+title: "risk code"
+format: html
+editor: visual
+---
+
+## Quarto
+
+Quarto enables you to weave together content and executable code into a finished document. To learn more about Quarto see <https://quarto.org>.
+
+## Running Code
+
+When you click the **Render** button a document will be generated that includes both content and the output of embedded code. You can embed code like this:
+
+#GET DATA
+```{r}
+library(quantmod)
+library(MASS)
+library(metRology)
+library(rugarch)
+library(moments)
+```
+
+You can add options to executable code like this
+
+#NORMALITY TEST
+```{r}
+#| label: normality-test
+acn <- getSymbols("ACN", src = "yahoo", auto.assign = FALSE)[,4]
+
+acn <- na.omit(acn)
+
+names(acn) <- c("ACN")
+
+logret_acn <- diff(log(acn))[-1]
+
+rvec_acn <- as.vector(logret_acn)
+jarque.test(rvec_acn)
+```
+#VOLATILITY CLUSTERING AND SERIAL CORRELATION TEST
+```{r}
+acf(abs(logret_acn))
+acf(logret_acn)
+```
+
+#FIT AND TEST GARCH MODEL
+```{r}
+uspec_acn <- ugarchspec( variance.model=list(model="sGARCH",garchOrder=c(1,1)),
+
+                     mean.model=list(armaOrder=c(0,0),include.mean=TRUE),
+
+                     distribution.model="std" )
+
+fit.garch.acn = ugarchfit(spec=uspec_acn, data=logret_acn, solver="hybrid")
+round(fit.garch.acn@fit$coef, 6)
+
+z_acn <- residuals(fit.garch.acn, standardize = TRUE)
+acf(abs(z_acn))
+```
+
+#CALCULATE VAR AND ES FOR NON-NORMAL DISTIRBUTIONS
+```{r}
+#| label: tests
+alpha <- 0.05  # 95% Confidence Level
+
+# Fit t-distribution for Method 1
+t.fit <- fitdistr(logret_acn, "t")
+m <- t.fit$estimate[1]
+s <- t.fit$estimate[2]
+df <- t.fit$estimate[3]
+
+# ---------------------------------------------------------
+# Method 1: Scaled t-distribution
+# ---------------------------------------------------------
+set.seed(123789)
+rsim1 <- rep(0, 100000)
+for (i in 1:10) {
+  rsim1 <- rsim1 + rt.scaled(100000, mean = m, sd = s, df = df)
+}
+
+VaR1 <- quantile(rsim1, alpha)
+ES1  <- mean(rsim1[rsim1 < VaR1])
+
+# Q1 & Q2
+cat("Q1 (Method 1 VaR):", round(VaR1, 6), "\n")
+cat("Q2 (Method 1 ES) :", round(ES1, 6), "\n\n")
+
+# ---------------------------------------------------------
+# Method 2: Empirical i.i.d. Bootstrap
+# ---------------------------------------------------------
+set.seed(123789)
+rvec2 <- rep(0, 100000)
+for (i in 1:10) {
+  rvec2 <- rvec2 + sample(as.vector(logret_acn), 100000, replace = TRUE)
+}
+
+VaR2 <- quantile(rvec2, alpha)
+ES2 <- mean(rvec2[rvec2 < VaR2])
+
+# Q3 & Q4
+cat("Q3 (Method 2 VaR):", VaR2, "\n")
+cat("Q4 (Method 2 ES) :", ES2, "\n\n")
+
+# ---------------------------------------------------------
+# Method 3: 10 Consecutive Days (Block Bootstrap)
+# ---------------------------------------------------------
+rvec <- as.vector(logret_acn)
+set.seed(123789)
+rsim3 <- rep(0, 100000)
+posn <- seq(from = 1, to = length(rvec) - 9, by = 1)
+rpos <- sample(posn, 100000, replace = TRUE)
+
+for (i in 1:10) {
+  rsim3 <- rsim3 + rvec[rpos]
+  rpos <- rpos + 1
+}
+
+VaR3 <- quantile(rsim3, alpha)
+ES3  <- mean(rsim3[rsim3 < VaR3])
+
+# Q5 & Q6
+cat("Q5 (Method 3 VaR):", round(VaR3, 6), "\n")
+cat("Q6 (Method 3 ES) :", round(ES3, 6), "\n")
+```
+
+#GARCH BOOTSTRAPPING FOR FUTURE VAR AND ES
+```{r}
+uspec <- ugarchspec( variance.model=list(model="sGARCH",garchOrder=c(1,1)),
+
+                     mean.model=list(armaOrder=c(0,0),include.mean=TRUE),
+
+                     distribution.model="std" )
+
+fit.garch = ugarchfit( spec=uspec, data=logret_acn, solver="hybrid")
+
+save1 <- cbind(
+  logret_acn = logret_acn[, 1], 
+  s = fit.garch@fit$sigma, 
+  z = fit.garch@fit$z
+)
+                  
+set.seed(123789)
+
+boot.garch <- ugarchboot(fit.garch,
+
+              method=c("Partial","Full")[1], 
+
+              sampling="raw", 
+
+              n.ahead=30, 
+
+              n.bootpred=100000, 
+
+              solver="solnp")
+
+rsim <- boot.garch@fseries
+```
+
+```{r}
+alpha <- 0.05
+
+VaR <- quantile(rsim, alpha)
+es <- mean(rsim[rsim < VaR])
+
+round(VaR, 6)
+round(es, 6)
+```
+
+#RATIO ANALYSIS
+```{r}
+library(quantmod)
+library(rugarch)
+
+# 1. Fetch Accenture (ACN), Market (^GSPC), and Risk-Free Rate (^IRX) Data
+acn <- getSymbols("ACN", src = "yahoo", auto.assign = FALSE)[, 4]
+sp500 <- getSymbols("^GSPC", src = "yahoo", auto.assign = FALSE)[, 4]
+irx_data <- getSymbols("^IRX", src = "yahoo", auto.assign = FALSE)
+
+# 2. Clean missing values
+acn <- na.omit(acn)
+sp500 <- na.omit(sp500)
+
+# 3. Calculate Log Returns
+logret_acn <- diff(log(acn))[-1]
+logret_mkt <- diff(log(sp500))[-1]
+
+# 4. Extract Close price for IRX and convert to daily log rate
+rf_annual <- na.omit(Cl(irx_data)) / 100
+rf_daily_log <- log(1 + (rf_annual / 252))
+
+# 5. Align all dates using inner join
+data_combined <- merge(logret_acn, logret_mkt, rf_daily_log, join = "inner")
+colnames(data_combined) <- c("ACN", "Market", "RF")
+
+logret_acn <- data_combined$ACN
+logret_mkt <- data_combined$Market
+rf_matched <- data_combined$RF
+
+# --- DEFINE PERFORMANCE METRIC FUNCTIONS ---
+
+# Sortino Ratio Function
+calc_sortino <- function(logret, rf, mar = 0) {
+  excess_ret <- logret - rf
+  mean_excess <- mean(excess_ret, na.rm = TRUE)
+  
+  # Downside deviation relative to MAR
+  downside_diff <- pmin(0, logret - mar)
+  downside_dev  <- sqrt(mean(downside_diff^2, na.rm = TRUE))
+  
+  # Annualize: Daily Sortino * sqrt(252)
+  annual_sortino <- (mean_excess / downside_dev) * sqrt(252)
+  return(as.numeric(annual_sortino))
+}
+
+# Treynor Ratio Function
+calc_treynor <- function(logret_p, logret_m, rf) {
+  excess_p <- logret_p - rf
+  excess_m <- logret_m - rf
+  
+  mean_excess_p <- mean(excess_p, na.rm = TRUE)
+  
+  # Calculate Systematic Risk (Beta)
+  beta_p <- cov(excess_p, excess_m, use = "complete.obs") / var(excess_m, na.rm = TRUE)
+  
+  # Annualize: Daily Treynor * 252
+  annual_treynor <- (mean_excess_p / beta_p) * 252
+  return(list(Treynor = as.numeric(annual_treynor), Beta = as.numeric(beta_p)))
+}
+
+# --- CALCULATE RATIOS FOR ACN ---
+
+sortino_acn <- calc_sortino(logret_acn, rf = rf_matched, mar = 0)
+treynor_acn <- calc_treynor(logret_acn, logret_mkt, rf = rf_matched)
+
+cat("--- Performance Metrics for ACN ---\n")
+cat("Annualized Sortino Ratio :", round(sortino_acn, 4), "\n")
+cat("Beta                     :", round(treynor_acn$Beta, 4), "\n")
+cat("Annualized Treynor Ratio :", round(treynor_acn$Treynor, 4), "\n")
